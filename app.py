@@ -1,118 +1,131 @@
 import streamlit as st
-import os
 import base64
 from openai import OpenAI
 
-# --- CONFIGURACIÓN DE USUARIO ---
-API_KEY = st.secrets["OPENAI_API_KEY"]
-ASSISTANT_ID = "asst_R586kupUESTSmqPXjyGhNHOw"                  # <--- ¡PON EL ID DE TU ASISTENTE AQUÍ!
-ARCHIVO_THREAD = "mi_hilo_guardado.txt"
-# -------------------------------
-
-# Configuración de la página web
+# Configuración de la página
 st.set_page_config(page_title="Yarbis 2.0", page_icon="🤖")
-st.title("🤖 Yarbis 2.0 (Con Ojos)")
+st.title("🤖 Yarbis 2.0 (Historial Eterno)")
 
-# Conexión a OpenAI
-client = OpenAI(api_key=API_KEY)
+# --- 1. CONEXIÓN SEGURA ---
+try:
+    api_key = st.secrets["OPENAI_API_KEY"]
+    assistant_id = "asst_..." # <--- ¡PON AQUI TU ID DE ASISTENTE (asst_...)!
+    thread_id = st.secrets["THREAD_ID"] # <--- Ahora lee el ID fijo de los secretos
+except:
+    st.error("⚠️ Faltan configurar los Secretos (API Key o Thread ID).")
+    st.stop()
 
-# --- FUNCIONES DE MEMORIA Y VISIÓN ---
+client = OpenAI(api_key=api_key)
 
-def obtener_hilo():
-    """Recupera el hilo guardado o crea uno nuevo."""
-    if os.path.exists(ARCHIVO_THREAD):
-        with open(ARCHIVO_THREAD, "r") as f:
-            return f.read().strip()
-    else:
-        thread = client.beta.threads.create()
-        with open(ARCHIVO_THREAD, "w") as f:
-            f.write(thread.id)
-        return thread.id
+# --- 2. FUNCIONES CLAVE ---
 
 def procesar_imagen(uploaded_file):
-    """Convierte la imagen subida a formato base64 para que GPT la vea."""
+    """Convierte imagen a base64 para enviarla a GPT"""
     if uploaded_file is not None:
-        bytes_data = uploaded_file.getvalue()
-        base64_image = base64.b64encode(bytes_data).decode('utf-8')
-        return f"data:image/jpeg;base64,{base64_image}"
+        try:
+            bytes_data = uploaded_file.getvalue()
+            base64_image = base64.b64encode(bytes_data).decode('utf-8')
+            return f"data:image/jpeg;base64,{base64_image}"
+        except Exception as e:
+            st.error(f"Error procesando imagen: {e}")
+            return None
     return None
 
-# --- LÓGICA DEL CHAT ---
+def cargar_historial():
+    """Descarga los mensajes viejos de OpenAI para que no se vea vacío"""
+    messages = []
+    try:
+        # Traemos los últimos 20 mensajes (para que cargue rápido)
+        response = client.beta.threads.messages.list(
+            thread_id=thread_id,
+            limit=20,
+            order="asc" # Orden cronológico
+        )
+        for msg in response.data:
+            role = msg.role
+            content = ""
+            # OpenAI devuelve el contenido en partes, hay que unirlo
+            for part in msg.content:
+                if part.type == 'text':
+                    content += part.text.value
+            
+            messages.append({"role": role, "content": content})
+    except Exception as e:
+        st.error(f"No pude cargar el historial: {e}")
+    return messages
 
-# 1. Inicializar sesión y cargar hilo
-if "thread_id" not in st.session_state:
-    st.session_state.thread_id = obtener_hilo()
+# --- 3. INICIO DE SESIÓN ---
 
+# Si es la primera vez que abres la pestaña, carga el historial de la nube
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = cargar_historial()
 
-# 2. Barra lateral para subir imágenes
+# --- 4. INTERFAZ ---
+
+# Barra lateral para subir fotos y recargar
 with st.sidebar:
     st.header("📸 Subir Evidencia")
-    imagen_subida = st.file_uploader("Carga una imagen para análisis", type=["png", "jpg", "jpeg"])
+    imagen_subida = st.file_uploader("Carga JPG o PNG", type=["png", "jpg", "jpeg"])
     
-    if st.button("🗑️ Borrar Memoria (Reiniciar Chat)"):
-        if os.path.exists(ARCHIVO_THREAD):
-            os.remove(ARCHIVO_THREAD)
-        st.session_state.messages = []
-        del st.session_state.thread_id
+    if st.button("🔄 Recargar Chat"):
+        # Borra la memoria local y vuelve a bajarla de la nube
+        st.cache_data.clear()
+        del st.session_state.messages
         st.rerun()
 
-# 3. Mostrar historial visual en pantalla
+# Mostrar mensajes
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "image" in msg and msg["image"]:
-            st.image(msg["image"], width=200)
+    if msg["content"]: # Solo mostrar si hay texto
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-# 4. CAPTURAR ENTRADA DEL USUARIO
-prompt = st.chat_input("Escribe tu mensaje aquí...")
+# --- 5. LÓGICA DE CHAT ---
+prompt = st.chat_input("Escribe aquí...")
 
 if prompt:
-    # A. Mostrar mensaje del usuario de inmediato
+    # A. Mostrar mensaje usuario (Visual inmediata)
     with st.chat_message("user"):
         st.markdown(prompt)
-        # Si hay imagen, la mostramos también
         if imagen_subida:
             st.image(imagen_subida, width=200)
-            st.caption("Imagen adjunta enviada.")
     
-    # Guardar en historial visual local
-    st.session_state.messages.append({"role": "user", "content": prompt, "image": imagen_subida})
+    # Agregar a la lista local temporalmente
+    st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # B. Preparar el mensaje para OpenAI (Texto + Imagen si existe)
+    # B. Preparar el paquete para OpenAI
     contenido_mensaje = [{"type": "text", "text": prompt}]
     
     if imagen_subida:
         url_imagen = procesar_imagen(imagen_subida)
-        contenido_mensaje.append({
-            "type": "image_url",
-            "image_url": {"url": url_imagen}
-        })
+        if url_imagen:
+            contenido_mensaje.append({
+                "type": "image_url",
+                "image_url": {"url": url_imagen}
+            })
 
-    # C. Enviarlo al hilo en la nube
+    # C. Enviar a la nube (Al hilo eterno)
     client.beta.threads.messages.create(
-        thread_id=st.session_state.thread_id,
+        thread_id=thread_id,
         role="user",
         content=contenido_mensaje
     )
 
-    # D. Ejecutar al Asistente
+    # D. Ejecutar Yarbis
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        message_placeholder.markdown("⏳ *Analizando...*")
+        message_placeholder.markdown("⏳ *Pensando...*")
         
         run = client.beta.threads.runs.create_and_poll(
-            thread_id=st.session_state.thread_id,
-            assistant_id=ASSISTANT_ID
+            thread_id=thread_id,
+            assistant_id=assistant_id
         )
 
         if run.status == 'completed':
-            mensajes = client.beta.threads.messages.list(thread_id=st.session_state.thread_id)
-            # La respuesta 0 es la última
+            # Obtener solo el último mensaje
+            mensajes = client.beta.threads.messages.list(thread_id=thread_id, limit=1)
             texto_respuesta = mensajes.data[0].content[0].text.value
             
-            # Limpiar anotaciones raras de citas [source]
+            # Limpieza de texto
             import re
             texto_limpio = re.sub(r'【.*?】', '', texto_respuesta)
             
