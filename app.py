@@ -9,7 +9,7 @@ st.title("🤖 Yarbis 2.0 (Historial Eterno)")
 # --- 1. CONEXIÓN SEGURA ---
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
-    assistant_id = "asst_..." # <--- ¡PON AQUI TU ID DE ASISTENTE (asst_...)!
+    assistant_id = "asst_R586kupUESTSmqPXjyGhNHOw" # <--- ¡PON AQUI TU ID DE ASISTENTE (asst_...)!
     thread_id = st.secrets["THREAD_ID"] # <--- Ahora lee el ID fijo de los secretos
 except:
     st.error("⚠️ Faltan configurar los Secretos (API Key o Thread ID).")
@@ -133,3 +133,4 @@ if prompt:
             st.session_state.messages.append({"role": "assistant", "content": texto_limpio})
         else:
             message_placeholder.markdown(f"❌ Error: {run.status}")
+
