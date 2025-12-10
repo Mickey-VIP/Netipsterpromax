@@ -40,12 +40,12 @@ def cancelar_runs_activos():
         runs = client.beta.threads.runs.list(thread_id=thread_id)
         for run in runs.data:
             if run.status in ["queued", "in_progress", "requires_action"]:
-                print(f"⚠️ Cancelando run trabado: {run.id}")
+                # print(f"⚠️ Cancelando run trabado: {run.id}")
                 client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
                 time.sleep(1) # Esperar un segundo a que OpenAI procese la cancelación
         return True
     except Exception as e:
-        print(f"Error intentando cancelar runs: {e}")
+        # print(f"Error intentando cancelar runs: {e}")
         return False
 
 def cargar_historial():
@@ -75,7 +75,7 @@ with st.sidebar:
         st.session_state.messages = cargar_historial()
         st.rerun()
 
-    # Botón de emergencia manual por si acaso
+    # Botón de emergencia manual
     if st.button("🔓 Destrabar Yarbis"):
         with st.spinner("Destrabando..."):
             cancelar_runs_activos()
@@ -94,7 +94,6 @@ prompt = st.chat_input("Escribe aquí...")
 
 if prompt:
     # 0. DESTRABE AUTOMÁTICO DE SEGURIDAD
-    # Antes de enviar nada, revisamos si Yarbis se quedó colgado y lo reseteamos
     cancelar_runs_activos()
 
     # 1. AGREGAR MENSAJE DE USUARIO
@@ -112,4 +111,26 @@ if prompt:
             if url: contenido_mensaje.append({"type": "image_url", "image_url": {"url": url}})
             st.session_state.uploader_key += 1
 
-        client.beta.
+        # ESTA ES LA LINEA QUE SE TE CORTÓ ANTES:
+        client.beta.threads.messages.create(thread_id=thread_id, role="user", content=contenido_mensaje)
+
+        # 3. EJECUTAR
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            placeholder.markdown("⏳ *Pensando...*")
+            
+            run = client.beta.threads.runs.create_and_poll(thread_id=thread_id, assistant_id=assistant_id)
+
+            if run.status == 'completed':
+                msgs = client.beta.threads.messages.list(thread_id=thread_id, limit=1)
+                text = msgs.data[0].content[0].text.value
+                import re
+                clean_text = re.sub(r'【.*?】', '', text)
+                
+                placeholder.markdown(clean_text)
+                st.session_state.messages.append({"role": "assistant", "content": clean_text})
+            else:
+                placeholder.markdown(f"❌ Error: {run.status}")
+
+    except Exception as e:
+        st.error(f"Hubo un error de conexión:
