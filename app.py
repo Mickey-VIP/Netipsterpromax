@@ -21,33 +21,31 @@ client = OpenAI(api_key=api_key)
 # --- FUNCIONES ---
 
 def redimensionar_imagen(uploaded_file):
-    """
-    Toma la imagen, la hace ligera y devuelve un archivo en memoria
-    listo para subirse a OpenAI.
-    """
+    """Procesa la imagen y la devuelve en memoria"""
     if uploaded_file is not None:
         try:
             image = Image.open(uploaded_file)
             if image.mode in ("RGBA", "P"): image = image.convert("RGB")
             
-            # Redimensionar a max 1024x1024 para rapidez
             image.thumbnail((1024, 1024))
             
-            # Guardar en un buffer de memoria (como un archivo virtual)
             byte_stream = io.BytesIO()
             image.save(byte_stream, format="JPEG", quality=85)
-            # Regresamos el "puntero" al inicio del archivo
-            byte_stream.seek(0) 
+            byte_stream.seek(0)
             return byte_stream
         except Exception as e:
             st.error(f"Error procesando imagen: {e}")
     return None
 
 def subir_archivo_openai(byte_stream):
-    """Sube el archivo a los servidores de OpenAI y devuelve el ID"""
+    """Sube el archivo a OpenAI con un nombre ÚNICO basado en la hora"""
     try:
+        # Generamos un nombre único: imagen_ + hora actual
+        nombre_unico = f"imagen_{int(time.time())}.jpg"
+        
         response = client.files.create(
-            file=byte_stream,
+            # Aquí usamos el nombre dinámico
+            file=(nombre_unico, byte_stream), 
             purpose="vision"
         )
         return response.id
@@ -76,7 +74,7 @@ def cargar_historial():
                 if part.type == 'text': 
                     content += part.text.value
                 elif part.type == 'image_file':
-                    content += "\n*[Imagen subida]*\n"
+                    content += "\n*[Imagen analizada]*\n"
             messages.append({"role": msg.role, "content": content})
     except: pass
     return messages
@@ -113,7 +111,6 @@ for msg in st.session_state.messages:
 prompt = st.chat_input("Escribe aquí...")
 
 if prompt:
-    # 0. Limpieza preventiva
     cancelar_runs_activos()
 
     # 1. Mostrar visualmente
@@ -122,23 +119,20 @@ if prompt:
         st.markdown(prompt)
         if imagen_subida:
             st.image(imagen_subida, width=200)
-            st.caption("Subiendo imagen a la nube...")
+            st.caption("Analizando imagen...")
 
-    # 2. Preparar contenido para OpenAI
+    # 2. Preparar contenido
     try:
         contenido_mensaje = [{"type": "text", "text": prompt}]
         
         if imagen_subida:
-            # A. Procesamos la imagen localmente
             archivo_memoria = redimensionar_imagen(imagen_subida)
             
             if archivo_memoria:
-                # B. La subimos a OpenAI (Files API)
+                # Subimos el archivo con el nombre correcto
                 file_id = subir_archivo_openai(archivo_memoria)
                 
                 if file_id:
-                    # C. Agregamos la referencia (ID) al mensaje
-                    # OJO: Aquí usamos 'image_file' en lugar de 'image_url'
                     contenido_mensaje.append({
                         "type": "image_file", 
                         "image_file": {"file_id": file_id}
@@ -146,7 +140,7 @@ if prompt:
             
             st.session_state.uploader_key += 1
 
-        # 3. Enviar mensaje al hilo
+        # 3. Enviar mensaje
         client.beta.threads.messages.create(thread_id=thread_id, role="user", content=contenido_mensaje)
 
         # 4. Ejecutar Asistente
@@ -169,4 +163,4 @@ if prompt:
 
     except Exception as e:
         st.error(f"Error crítico: {e}")
-        st.warning("Intenta usar el botón de '🔓 Destrabar Yarbis'.")
+        st.warning("Usa el botón de 'Destrabar Yarbis'.")
