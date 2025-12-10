@@ -1,155 +1,121 @@
 import streamlit as st
 import base64
-from openai import OpenAI
 from PIL import Image
 import io
+from openai import OpenAI
 
 # Configuración de la página
-st.set_page_config(page_title="Yarbis 2.0", page_icon="🤖")
-st.title("🤖 Yarbis 2.0 (Historial Eterno)")
+st.set_page_config(page_title="Yarbis Pro", page_icon="🤖")
+st.title("🤖 Yarbis Pro (Self-Healing)")
 
-# --- 1. CONEXIÓN SEGURA ---
+# --- 1. CONEXIÓN ---
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
-    assistant_id = "asst_R586kupUESTSmqPXjyGhNHOw" # <--- ¡PON AQUI TU ID DE ASISTENTE (asst_...)!
-    thread_id = st.secrets["THREAD_ID"] # <--- Ahora lee el ID fijo de los secretos
+    assistant_id = st.secrets["ASSISTANT_ID"] # Asegúrate de tener este nombre en Secrets
+    thread_id = st.secrets["THREAD_ID"]
 except:
-    st.error("⚠️ Faltan configurar los Secretos (API Key o Thread ID).")
+    st.error("⚠️ Faltan configurar los Secretos. Revisa tu archivo secrets.toml en Streamlit.")
     st.stop()
 
 client = OpenAI(api_key=api_key)
 
-# --- 2. FUNCIONES CLAVE ---
+# --- 2. FUNCIONES DE UTILIDAD ---
 
 def procesar_imagen(uploaded_file):
-    """Redimensiona y convierte la imagen a JPEG estándar para evitar errores."""
+    """Procesa imagen para evitar errores de formato"""
     if uploaded_file is not None:
         try:
-            # 1. Abrir la imagen con Pillow
             image = Image.open(uploaded_file)
-            
-            # 2. Convertir a RGB (por si es PNG con fondo transparente que da problemas)
-            if image.mode in ("RGBA", "P"): 
-                image = image.convert("RGB")
-            
-            # 3. Redimensionar si es muy grande (Max 1024px) para ahorrar datos y evitar errores
+            if image.mode in ("RGBA", "P"): image = image.convert("RGB")
             max_size = (1024, 1024)
             image.thumbnail(max_size)
-            
-            # 4. Guardar en memoria como JPEG limpio
             buffered = io.BytesIO()
             image.save(buffered, format="JPEG", quality=85)
-            
-            # 5. Convertir a Base64
             base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
             return f"data:image/jpeg;base64,{base64_image}"
-            
         except Exception as e:
-            st.error(f"Error procesando imagen: {e}")
+            st.error(f"Error imagen: {e}")
             return None
     return None
 
+def verificar_estado_hilo():
+    """Revisa si el hilo está trabado en una ejecución anterior"""
+    try:
+        # Buscamos si hay ejecuciones activas (queued, in_progress, etc)
+        runs = client.beta.threads.runs.list(thread_id=thread_id)
+        for run in runs.data:
+            if run.status in ["queued", "in_progress", "requires_action", "cancelling"]:
+                return run.id
+        return None
+    except:
+        return None
+
+def cancelar_run(run_id):
+    """Cancela una ejecución trabada"""
+    try:
+        client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run_id)
+        return True
+    except Exception as e:
+        st.error(f"No se pudo cancelar: {e}")
+        return False
+
 def cargar_historial():
-    """Descarga los mensajes viejos de OpenAI para que no se vea vacío"""
+    """Descarga mensajes previos"""
     messages = []
     try:
-        # Traemos los últimos 20 mensajes (para que cargue rápido)
         response = client.beta.threads.messages.list(
-            thread_id=thread_id,
-            limit=20,
-            order="asc" # Orden cronológico
+            thread_id=thread_id, limit=20, order="asc"
         )
         for msg in response.data:
             role = msg.role
             content = ""
-            # OpenAI devuelve el contenido en partes, hay que unirlo
             for part in msg.content:
                 if part.type == 'text':
                     content += part.text.value
-            
             messages.append({"role": role, "content": content})
-    except Exception as e:
-        st.error(f"No pude cargar el historial: {e}")
+    except:
+        pass
     return messages
 
-# --- 3. INICIO DE SESIÓN ---
+# --- 3. LÓGICA PRINCIPAL ---
 
-# Si es la primera vez que abres la pestaña, carga el historial de la nube
+# A. SISTEMA DE DESBLOQUEO (Lo primero que revisa)
+run_trabado = verificar_estado_hilo()
+
+if run_trabado:
+    st.warning("⚠️ Yarbis se quedó pensando en una sesión anterior y el chat está bloqueado.")
+    if st.button("🔓 DETENER Y DESBLOQUEAR"):
+        with st.spinner("Cancelando proceso anterior..."):
+            if cancelar_run(run_trabado):
+                st.success("¡Listo! Hilo liberado.")
+                st.rerun() # Recarga la página
+    st.stop() # Detiene la app aquí hasta que se desbloquee
+
+# B. CARGA DE CHAT (Solo si no está trabado)
 if "messages" not in st.session_state:
     st.session_state.messages = cargar_historial()
 
-# --- 4. INTERFAZ ---
-
-# Barra lateral para subir fotos y recargar
+# Barra lateral
 with st.sidebar:
-    st.header("📸 Subir Evidencia")
-    imagen_subida = st.file_uploader("Carga JPG o PNG", type=["png", "jpg", "jpeg"])
-    
-    if st.button("🔄 Recargar Chat"):
-        # Borra la memoria local y vuelve a bajarla de la nube
+    st.header("📸 Evidencia")
+    imagen_subida = st.file_uploader("Subir foto", type=["png", "jpg", "jpeg"])
+    if st.button("🔄 Actualizar Chat"):
         st.cache_data.clear()
         del st.session_state.messages
         st.rerun()
 
 # Mostrar mensajes
 for msg in st.session_state.messages:
-    if msg["content"]: # Solo mostrar si hay texto
+    if msg["content"]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-# --- 5. LÓGICA DE CHAT ---
+# C. INPUT DE USUARIO
 prompt = st.chat_input("Escribe aquí...")
 
 if prompt:
-    # A. Mostrar mensaje usuario (Visual inmediata)
+    # Mostrar visualmente
     with st.chat_message("user"):
         st.markdown(prompt)
         if imagen_subida:
             st.image(imagen_subida, width=200)
-    
-    # Agregar a la lista local temporalmente
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    # B. Preparar el paquete para OpenAI
-    contenido_mensaje = [{"type": "text", "text": prompt}]
-    
-    if imagen_subida:
-        url_imagen = procesar_imagen(imagen_subida)
-        if url_imagen:
-            contenido_mensaje.append({
-                "type": "image_url",
-                "image_url": {"url": url_imagen}
-            })
-
-    # C. Enviar a la nube (Al hilo eterno)
-    client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=contenido_mensaje
-    )
-
-    # D. Ejecutar Yarbis
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        message_placeholder.markdown("⏳ *Pensando...*")
-        
-        run = client.beta.threads.runs.create_and_poll(
-            thread_id=thread_id,
-            assistant_id=assistant_id
-        )
-
-        if run.status == 'completed':
-            # Obtener solo el último mensaje
-            mensajes = client.beta.threads.messages.list(thread_id=thread_id, limit=1)
-            texto_respuesta = mensajes.data[0].content[0].text.value
-            
-            # Limpieza de texto
-            import re
-            texto_limpio = re.sub(r'【.*?】', '', texto_respuesta)
-            
-            message_placeholder.markdown(texto_limpio)
-            st.session_state.messages.append({"role": "assistant", "content": texto_limpio})
-        else:
-            message_placeholder.markdown(f"❌ Error: {run.status}")
-
-
