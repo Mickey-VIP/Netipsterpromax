@@ -1,6 +1,8 @@
 import streamlit as st
 import base64
 from openai import OpenAI
+from PIL import Image
+import io
 
 # Configuración de la página
 st.set_page_config(page_title="Yarbis 2.0", page_icon="🤖")
@@ -20,12 +22,28 @@ client = OpenAI(api_key=api_key)
 # --- 2. FUNCIONES CLAVE ---
 
 def procesar_imagen(uploaded_file):
-    """Convierte imagen a base64 para enviarla a GPT"""
+    """Redimensiona y convierte la imagen a JPEG estándar para evitar errores."""
     if uploaded_file is not None:
         try:
-            bytes_data = uploaded_file.getvalue()
-            base64_image = base64.b64encode(bytes_data).decode('utf-8')
+            # 1. Abrir la imagen con Pillow
+            image = Image.open(uploaded_file)
+            
+            # 2. Convertir a RGB (por si es PNG con fondo transparente que da problemas)
+            if image.mode in ("RGBA", "P"): 
+                image = image.convert("RGB")
+            
+            # 3. Redimensionar si es muy grande (Max 1024px) para ahorrar datos y evitar errores
+            max_size = (1024, 1024)
+            image.thumbnail(max_size)
+            
+            # 4. Guardar en memoria como JPEG limpio
+            buffered = io.BytesIO()
+            image.save(buffered, format="JPEG", quality=85)
+            
+            # 5. Convertir a Base64
+            base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
             return f"data:image/jpeg;base64,{base64_image}"
+            
         except Exception as e:
             st.error(f"Error procesando imagen: {e}")
             return None
@@ -133,4 +151,5 @@ if prompt:
             st.session_state.messages.append({"role": "assistant", "content": texto_limpio})
         else:
             message_placeholder.markdown(f"❌ Error: {run.status}")
+
 
