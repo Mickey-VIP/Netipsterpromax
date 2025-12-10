@@ -34,10 +34,23 @@ def procesar_imagen(uploaded_file):
             st.error(f"Error imagen: {e}")
     return None
 
+def cancelar_runs_activos():
+    """Esta función es el 'Destraba-Hilos'. Revisa si hay algo atorado y lo mata."""
+    try:
+        runs = client.beta.threads.runs.list(thread_id=thread_id)
+        for run in runs.data:
+            if run.status in ["queued", "in_progress", "requires_action"]:
+                print(f"⚠️ Cancelando run trabado: {run.id}")
+                client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
+                time.sleep(1) # Esperar un segundo a que OpenAI procese la cancelación
+        return True
+    except Exception as e:
+        print(f"Error intentando cancelar runs: {e}")
+        return False
+
 def cargar_historial():
     messages = []
     try:
-        # Traemos más mensajes para tener mejor contexto
         response = client.beta.threads.messages.list(thread_id=thread_id, limit=50, order="asc")
         for msg in response.data:
             content = ""
@@ -54,7 +67,6 @@ if "messages" not in st.session_state:
 # --- INTERFAZ ---
 with st.sidebar:
     st.header("📸 Evidencia")
-    # Usamos una clave única para el uploader para resetearlo después de usarlo
     if "uploader_key" not in st.session_state: st.session_state.uploader_key = 0
     imagen_subida = st.file_uploader("Subir foto", type=["png", "jpg", "jpeg"], key=f"uploader_{st.session_state.uploader_key}")
     
@@ -62,6 +74,14 @@ with st.sidebar:
         st.cache_data.clear()
         st.session_state.messages = cargar_historial()
         st.rerun()
+
+    # Botón de emergencia manual por si acaso
+    if st.button("🔓 Destrabar Yarbis"):
+        with st.spinner("Destrabando..."):
+            cancelar_runs_activos()
+            st.success("Listo, intenta escribir de nuevo.")
+            time.sleep(1)
+            st.rerun()
 
 # Mostrar historial visual
 for msg in st.session_state.messages:
@@ -73,42 +93,23 @@ for msg in st.session_state.messages:
 prompt = st.chat_input("Escribe aquí...")
 
 if prompt:
-    # 1. AGREGAR MENSAJE DE USUARIO AL HISTORIAL VISUAL INMEDIATAMENTE
-    # Esto asegura que se vea tu mensaje nuevo y no se sobrescriba el anterior.
+    # 0. DESTRABE AUTOMÁTICO DE SEGURIDAD
+    # Antes de enviar nada, revisamos si Yarbis se quedó colgado y lo reseteamos
+    cancelar_runs_activos()
+
+    # 1. AGREGAR MENSAJE DE USUARIO
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
         if imagen_subida:
             st.image(imagen_subida, width=200)
 
-    # 2. Preparar y enviar a OpenAI
-    contenido_mensaje = [{"type": "text", "text": prompt}]
-    if imagen_subida:
-        url = procesar_imagen(imagen_subida)
-        if url: contenido_mensaje.append({"type": "image_url", "image_url": {"url": url}})
-        # Importante: Resetear el uploader para la próxima vez
-        st.session_state.uploader_key += 1
+    # 2. ENVIAR A OPENAI
+    try:
+        contenido_mensaje = [{"type": "text", "text": prompt}]
+        if imagen_subida:
+            url = procesar_imagen(imagen_subida)
+            if url: contenido_mensaje.append({"type": "image_url", "image_url": {"url": url}})
+            st.session_state.uploader_key += 1
 
-    client.beta.threads.messages.create(thread_id=thread_id, role="user", content=contenido_mensaje)
-
-    # 3. EJECUTAR AL ASISTENTE Y ESPERAR RESPUESTA
-    with st.chat_message("assistant"):
-        placeholder = st.empty()
-        placeholder.markdown("⏳ *Pensando...*")
-        
-        run = client.beta.threads.runs.create_and_poll(thread_id=thread_id, assistant_id=assistant_id)
-
-        if run.status == 'completed':
-            msgs = client.beta.threads.messages.list(thread_id=thread_id, limit=1)
-            text = msgs.data[0].content[0].text.value
-            import re
-            clean_text = re.sub(r'【.*?】', '', text)
-            
-            # Mostrar respuesta
-            placeholder.markdown(clean_text)
-            
-            # 4. AGREGAR RESPUESTA DEL ASISTENTE AL HISTORIAL VISUAL
-            # Fundamental para que la respuesta se quede ahí y no desaparezca.
-            st.session_state.messages.append({"role": "assistant", "content": clean_text})
-        else:
-            placeholder.markdown(f"❌ Error: {run.status}")
+        client.beta.
