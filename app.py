@@ -133,4 +133,5 @@ if prompt:
                 placeholder.markdown(f"❌ Error: {run.status}")
 
     except Exception as e:
-        st.error(f"Hubo un error de conexión:
+        st.error(f"Hubo un error de conexión: {e}")
+        st.warning("Prueba picándole al botón de '🔓 Destrabar Yarbis' en la barra lateral.")
