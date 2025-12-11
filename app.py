@@ -12,39 +12,45 @@ st.title("🎯 Yarbis: Panel de Control")
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
     assistant_id = st.secrets["ASSISTANT_ID"]
-    thread_id = st.secrets["THREAD_ID"]
+    # Intentamos cargar el hilo base, pero permitiremos cambiarlo en sesión
+    secret_thread_id = st.secrets["THREAD_ID"]
 except:
     st.error("⚠️ Faltan secretos.")
     st.stop()
 
 client = OpenAI(api_key=api_key)
 
-# --- FUNCIONES ---
+# --- GESTIÓN DE HILO (CEREBRO) ---
+if "current_thread_id" not in st.session_state:
+    st.session_state.current_thread_id = secret_thread_id
+
+def crear_nuevo_hilo():
+    """Genera un hilo limpio en OpenAI para olvidar errores pasados."""
+    try:
+        thread = client.beta.threads.create()
+        st.session_state.current_thread_id = thread.id
+        st.session_state.messages = []
+        st.toast("✅ ¡Hilo Nuevo Creado! Memoria limpia.", icon="🧠")
+        time.sleep(1)
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error creando hilo: {e}")
+
+# --- FUNCIONES DE IMAGEN ---
 
 def sanear_imagen(uploaded_file):
-    """
-    Toma cualquier imagen (PNG, WebP, capturas raras) y la convierte
-    en un JPEG estándar y limpio que OpenAI ama.
-    """
+    """Limpia y estandariza la imagen a JPEG."""
     if uploaded_file is not None:
         try:
             image = Image.open(uploaded_file)
+            if image.mode in ("RGBA", "P", "LA"): image = image.convert("RGB")
             
-            # 1. Convertir a RGB (Elimina transparencias que rompen la visión)
-            if image.mode in ("RGBA", "P", "LA"): 
-                image = image.convert("RGB")
+            # Limitar tamaño para evitar timeouts
+            if image.width > 3000 or image.height > 3000:
+                image.thumbnail((3000, 3000), Image.Resampling.LANCZOS)
             
-            # 2. NO REDIMENSIONAMOS (Para máxima nitidez en tablas)
-            # Solo si es monstruosa (>4096) la limitamos para no saturar
-            if image.width > 4096 or image.height > 4096:
-                image.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
-            
-            # 3. Guardar en memoria como JPEG limpio
             byte_stream = io.BytesIO()
-            # Calidad 95 para que se lean los números pequeños
             image.save(byte_stream, format="JPEG", quality=95)
-            
-            # 4. Rebobinar el archivo (VITAL)
             byte_stream.seek(0)
             return byte_stream
         except Exception as e:
@@ -53,19 +59,14 @@ def sanear_imagen(uploaded_file):
 
 def subir_archivo_openai(byte_stream, nombre_usuario):
     try:
-        # Validación de seguridad
-        size = byte_stream.getbuffer().nbytes
-        if size == 0:
-            st.error("Error: La imagen está vacía.")
+        if byte_stream.getbuffer().nbytes == 0:
+            st.error("Error: Imagen vacía.")
             return None, None
 
         nombre_limpio = nombre_usuario.strip().replace(" ", "_")
         if not nombre_limpio: nombre_limpio = "Evidencia"
-        
-        # Siempre será .jpg porque la pasamos por la función sanear_imagen
         nombre_final = f"{nombre_limpio}_{int(time.time())}.jpg"
         
-        # SUBIDA OFICIAL COMO JPEG
         response = client.files.create(
             file=(nombre_final, byte_stream, "image/jpeg"), 
             purpose="vision"
@@ -76,19 +77,15 @@ def subir_archivo_openai(byte_stream, nombre_usuario):
         return None, None
 
 def obtener_biblioteca():
-    archivos_disponibles = []
+    archivos = []
     try:
         response = client.files.list(purpose="vision")
-        archivos_ordenados = sorted(response.data, key=lambda x: x.created_at, reverse=True)
-        for file in archivos_ordenados:
-            fecha = datetime.datetime.fromtimestamp(file.created_at).strftime('%d/%m %H:%M')
-            archivos_disponibles.append({
-                "id": file.id,
-                "name": file.filename, 
-                "date": fecha
-            })
+        sorted_files = sorted(response.data, key=lambda x: x.created_at, reverse=True)
+        for f in sorted_files:
+            date = datetime.datetime.fromtimestamp(f.created_at).strftime('%d/%m %H:%M')
+            archivos.append({"id": f.id, "name": f.filename, "date": date})
     except: pass
-    return archivos_disponibles
+    return archivos
 
 def borrar_archivo(file_id):
     try:
@@ -98,82 +95,85 @@ def borrar_archivo(file_id):
 
 def cancelar_runs_activos():
     try:
-        runs = client.beta.threads.runs.list(thread_id=thread_id)
+        tid = st.session_state.current_thread_id
+        runs = client.beta.threads.runs.list(thread_id=tid)
         for run in runs.data:
             if run.status in ["queued", "in_progress", "requires_action"]:
-                client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
+                client.beta.threads.runs.cancel(thread_id=tid, run_id=run.id)
                 time.sleep(1)
         return True
     except: return False
 
 def cargar_historial():
-    messages = []
+    msgs = []
     try:
-        response = client.beta.threads.messages.list(thread_id=thread_id, limit=50, order="asc")
-        for msg in response.data:
-            content = ""
-            for part in msg.content:
-                if part.type == 'text': content += part.text.value
-                elif part.type == 'image_file': content += "\n*[📎 Imagen]*\n"
-            messages.append({"role": msg.role, "content": content})
+        tid = st.session_state.current_thread_id
+        response = client.beta.threads.messages.list(thread_id=tid, limit=50, order="asc")
+        for m in response.data:
+            txt = ""
+            for p in m.content:
+                if p.type == 'text': txt += p.text.value
+                elif p.type == 'image_file': txt += "\n*[📎 Imagen]*\n"
+            msgs.append({"role": m.role, "content": txt})
     except: pass
-    return messages
+    return msgs
 
-# --- ESTADO ---
-if "messages" not in st.session_state: st.session_state.messages = cargar_historial()
+# --- ESTADO INICIAL ---
+if "messages" not in st.session_state: 
+    st.session_state.messages = cargar_historial()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🗂️ Biblioteca Manual")
+    st.header("🗂️ Panel de Control")
+    st.caption(f"Hilo ID: ...{st.session_state.current_thread_id[-6:]}")
     
+    # 1. BOTÓN DE EMERGENCIA (RESET)
+    if st.button("🔥 Nuevo Hilo (Reset)", type="primary"):
+        crear_nuevo_hilo()
+
+    st.divider()
+
+    # 2. SUBIDA
     with st.expander("📤 Subir Evidencia", expanded=True):
-        nombre_manual = st.text_input("Nombre (Ej: Roster OKC):", placeholder="Escribe aquí qué es...")
-        archivo_nuevo = st.file_uploader("Pega tu captura:", type=["jpg", "png", "jpeg", "webp"])
+        nombre_manual = st.text_input("Nombre:", placeholder="Ej: Roster OKC")
+        archivo_nuevo = st.file_uploader("Captura:", type=["jpg", "png", "jpeg", "webp"])
         
-        if st.button("Guardar en Biblioteca"):
-            if not nombre_manual:
-                st.error("¡Escribe un nombre primero!")
-            elif not archivo_nuevo:
-                st.error("¡Falta la imagen!")
+        if st.button("Guardar"):
+            if not nombre_manual or not archivo_nuevo:
+                st.error("Falta nombre o archivo.")
             else:
-                with st.spinner("Procesando y Subiendo..."):
-                    # 1. SANEAMOS LA IMAGEN (Convertir a JPEG estándar)
-                    jpg_limpio = sanear_imagen(archivo_nuevo)
-                    
-                    if jpg_limpio:
-                        # 2. SUBIMOS LA IMAGEN LIMPIA
-                        rid, nombre_final = subir_archivo_openai(jpg_limpio, nombre_manual)
+                with st.spinner("Saneando y Subiendo..."):
+                    jpg = sanear_imagen(archivo_nuevo)
+                    if jpg:
+                        rid, nfin = subir_archivo_openai(jpg, nombre_manual)
                         if rid:
-                            st.success(f"Guardado como: {nombre_final}")
+                            st.success(f"Guardado: {nfin}")
                             time.sleep(1)
                             st.rerun()
-
-    st.divider()
-
-    st.write("### Selecciona qué usar hoy:")
-    biblioteca = obtener_biblioteca()
-    opciones_nombres = [f"{f['name']} ({f['date']})" for f in biblioteca]
-    mapa_ids = {f"{f['name']} ({f['date']})": f['id'] for f in biblioteca}
     
-    seleccionados_nombres = st.multiselect("Activar imágenes:", options=opciones_nombres, placeholder="Selecciona...")
-    ids_activos = [mapa_ids[nombre] for nombre in seleccionados_nombres]
+    st.divider()
+    
+    # 3. SELECTOR
+    st.write("### Imágenes Activas:")
+    biblioteca = obtener_biblioteca()
+    opciones = [f"{f['name']} ({f['date']})" for f in biblioteca]
+    mapa = {f"{f['name']} ({f['date']})": f['id'] for f in biblioteca}
+    
+    seleccionados = st.multiselect("Selecciona:", options=opciones)
+    ids_activos = [mapa[n] for n in seleccionados]
 
+    # 4. BORRAR
     if biblioteca:
-        with st.expander("🗑️ Borrar archivos"):
-            borrar_nombre = st.selectbox("Eliminar:", options=opciones_nombres)
-            if st.button("Borrar definitivamente"):
-                if borrar_archivo(mapa_ids[borrar_nombre]):
-                    st.success("Eliminado.")
-                    time.sleep(1)
+        with st.expander("🗑️ Papelera"):
+            a_borrar = st.selectbox("Eliminar:", options=opciones)
+            if st.button("Borrar archivo"):
+                if borrar_archivo(mapa[a_borrar]):
+                    st.success("Borrado.")
+                    time.sleep(0.5)
                     st.rerun()
 
-    st.divider()
-    if st.button("🔄 Reset Chat"):
-        st.cache_data.clear()
+    if st.button("🔄 Recargar Chat"):
         st.session_state.messages = cargar_historial()
-        st.rerun()
-    if st.button("🔓 Destrabar"):
-        cancelar_runs_activos()
         st.rerun()
 
 # --- CHAT ---
@@ -182,45 +182,44 @@ for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-prompt = st.chat_input("Pregunta sobre las imágenes seleccionadas...")
+prompt = st.chat_input("Escribe aquí...")
 
 if prompt:
     cancelar_runs_activos()
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
-        if ids_activos: st.caption(f"📎 Analizando {len(ids_activos)} imágenes activas.")
+        if ids_activos: st.caption(f"📎 Analizando {len(ids_activos)} imágenes.")
 
     try:
-        contenido_mensaje = [{"type": "text", "text": prompt}]
-        if ids_activos:
-            for fid in ids_activos:
-                contenido_mensaje.append({"type": "image_file", "image_file": {"file_id": fid}})
+        tid = st.session_state.current_thread_id
+        content_pkg = [{"type": "text", "text": prompt}]
+        for fid in ids_activos:
+            content_pkg.append({"type": "image_file", "image_file": {"file_id": fid}})
 
-        client.beta.threads.messages.create(thread_id=thread_id, role="user", content=contenido_mensaje)
+        client.beta.threads.messages.create(thread_id=tid, role="user", content=content_pkg)
 
         with st.chat_message("assistant"):
-            placeholder = st.empty()
-            placeholder.markdown("⏳ *Analizando...*")
+            box = st.empty()
+            box.markdown("⏳ *Analizando...*")
             
-            run = client.beta.threads.runs.create_and_poll(thread_id=thread_id, assistant_id=assistant_id)
+            run = client.beta.threads.runs.create_and_poll(thread_id=tid, assistant_id=assistant_id)
             
             if run.status == 'completed':
-                msgs = client.beta.threads.messages.list(thread_id=thread_id, limit=1)
-                text = msgs.data[0].content[0].text.value
+                msgs = client.beta.threads.messages.list(thread_id=tid, limit=1)
+                txt = msgs.data[0].content[0].text.value
                 import re
-                clean_text = re.sub(r'【.*?】', '', text)
-                placeholder.markdown(clean_text)
-                st.session_state.messages.append({"role": "assistant", "content": clean_text})
+                clean = re.sub(r'【.*?】', '', txt)
+                box.markdown(clean)
+                st.session_state.messages.append({"role": "assistant", "content": clean})
             
             elif run.status == 'failed':
-                error_msg = run.last_error.message if run.last_error else "Error desconocido"
-                st.error(f"❌ Error detallado: {error_msg}")
-                if run.last_error:
-                    st.code(f"Código: {run.last_error.code}")
-            
+                err = run.last_error.message if run.last_error else "Error desconocido"
+                st.error(f"❌ Falló el análisis: {err}")
+                if "image_file" in err:
+                    st.warning("💡 Pista: El hilo busca una imagen borrada. Dale al botón '🔥 Nuevo Hilo (Reset)' en la barra lateral.")
             else:
-                placeholder.markdown(f"❌ Estado inesperado: {run.status}")
+                box.markdown(f"Estado: {run.status}")
 
     except Exception as e:
         st.error(f"Error: {e}")
