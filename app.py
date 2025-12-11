@@ -27,13 +27,14 @@ def redimensionar_imagen(uploaded_file):
             image = Image.open(uploaded_file)
             if image.mode in ("RGBA", "P"): image = image.convert("RGB")
             
-            # AJUSTE: 2048px es el estándar ideal para OpenAI (calidad vs velocidad)
+            # Tamaño seguro y estándar
             max_size = (2048, 2048)
             image.thumbnail(max_size, Image.Resampling.LANCZOS)
             
             byte_stream = io.BytesIO()
-            # Optimizamos el JPG para que pese menos
-            image.save(byte_stream, format="JPEG", quality=90, optimize=True)
+            # Quitamos 'optimize=True' para evitar corrupción de headers
+            # Usamos calidad 85 que es el estándar de oro de compatibilidad
+            image.save(byte_stream, format="JPEG", quality=85)
             byte_stream.seek(0)
             return byte_stream
         except Exception as e:
@@ -42,12 +43,21 @@ def redimensionar_imagen(uploaded_file):
 
 def subir_archivo_openai(byte_stream, nombre_usuario):
     try:
+        # 1. Validación de seguridad: ¿El archivo pesa algo?
+        size = byte_stream.getbuffer().nbytes
+        if size == 0:
+            st.error("Error: La imagen procesada está vacía.")
+            return None, None
+
         nombre_limpio = nombre_usuario.strip().replace(" ", "_")
         if not nombre_limpio: nombre_limpio = "Evidencia"
         nombre_final = f"{nombre_limpio}_{int(time.time())}.jpg"
         
+        # 2. SUBIDA EXPLÍCITA CON MIME TYPE
+        # Pasamos una tupla de 3 elementos: (nombre, datos, tipo_mime)
+        # Esto asegura que OpenAI la trate como imagen sí o sí.
         response = client.files.create(
-            file=(nombre_final, byte_stream), 
+            file=(nombre_final, byte_stream, "image/jpeg"), 
             purpose="vision"
         )
         return response.id, nombre_final
@@ -182,7 +192,6 @@ if prompt:
             
             run = client.beta.threads.runs.create_and_poll(thread_id=thread_id, assistant_id=assistant_id)
             
-            # --- AQUÍ ESTABA EL ERROR, AHORA YA ESTÁ ALINEADO ---
             if run.status == 'completed':
                 msgs = client.beta.threads.messages.list(thread_id=thread_id, limit=1)
                 text = msgs.data[0].content[0].text.value
@@ -192,7 +201,6 @@ if prompt:
                 st.session_state.messages.append({"role": "assistant", "content": clean_text})
             
             elif run.status == 'failed':
-                # Si falla, te dirá la razón exacta en rojo
                 error_msg = run.last_error.message if run.last_error else "Error desconocido"
                 st.error(f"❌ Error detallado: {error_msg}")
                 if run.last_error:
