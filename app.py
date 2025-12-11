@@ -22,17 +22,30 @@ client = OpenAI(api_key=api_key)
 # --- FUNCIONES ---
 
 def redimensionar_imagen(uploaded_file):
+    """
+    Versión HD: Mantiene la calidad alta para que se lean los números pequeños.
+    """
     if uploaded_file is not None:
         try:
             image = Image.open(uploaded_file)
-            if image.mode in ("RGBA", "P"): image = image.convert("RGB")
-            image.thumbnail((1024, 1024))
+            
+            # Convertir a RGB si es necesario
+            if image.mode in ("RGBA", "P"): 
+                image = image.convert("RGB")
+            
+            # CAMBIO CLAVE: Aumentamos el límite de 1024 a 4096 píxeles.
+            # Esto permite que las tablas grandes se vean nítidas.
+            max_size = (4096, 4096) 
+            image.thumbnail(max_size, Image.Resampling.LANCZOS) # Usamos un filtro de alta calidad
+            
             byte_stream = io.BytesIO()
-            image.save(byte_stream, format="JPEG", quality=85)
+            # Guardamos con calidad al 95% (antes era 85%) y optimizado
+            image.save(byte_stream, format="JPEG", quality=95, optimize=True)
             byte_stream.seek(0)
+            
             return byte_stream
         except Exception as e:
-            st.error(f"Error imagen: {e}")
+            st.error(f"Error procesando imagen: {e}")
     return None
 
 def subir_archivo_openai(byte_stream, nombre_usuario):
@@ -197,3 +210,4 @@ if prompt:
                 placeholder.markdown(f"❌ Error: {run.status}")
     except Exception as e:
         st.error(f"Error: {e}")
+
