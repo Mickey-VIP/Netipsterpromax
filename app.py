@@ -1,6 +1,8 @@
 import streamlit as st
+import io
 import time
 import datetime
+from PIL import Image
 from openai import OpenAI
 
 # --- CONFIGURACIÓN ---
@@ -19,55 +21,58 @@ client = OpenAI(api_key=api_key)
 
 # --- FUNCIONES ---
 
-def subir_archivo_openai(uploaded_file, nombre_usuario):
+def sanear_imagen(uploaded_file):
     """
-    Sube el archivo original asegurando que OpenAI sepa qué tipo de imagen es.
+    Toma cualquier imagen (PNG, WebP, capturas raras) y la convierte
+    en un JPEG estándar y limpio que OpenAI ama.
     """
+    if uploaded_file is not None:
+        try:
+            image = Image.open(uploaded_file)
+            
+            # 1. Convertir a RGB (Elimina transparencias que rompen la visión)
+            if image.mode in ("RGBA", "P", "LA"): 
+                image = image.convert("RGB")
+            
+            # 2. NO REDIMENSIONAMOS (Para máxima nitidez en tablas)
+            # Solo si es monstruosa (>4096) la limitamos para no saturar
+            if image.width > 4096 or image.height > 4096:
+                image.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
+            
+            # 3. Guardar en memoria como JPEG limpio
+            byte_stream = io.BytesIO()
+            # Calidad 95 para que se lean los números pequeños
+            image.save(byte_stream, format="JPEG", quality=95)
+            
+            # 4. Rebobinar el archivo (VITAL)
+            byte_stream.seek(0)
+            return byte_stream
+        except Exception as e:
+            st.error(f"Error procesando imagen: {e}")
+    return None
+
+def subir_archivo_openai(byte_stream, nombre_usuario):
     try:
-        # 1. RESETEAR EL PUNTERO (Esto es vital, si no, se lee vacío)
-        uploaded_file.seek(0)
-        
-        # 2. LEER DATOS
-        datos_archivo = uploaded_file.read()
-        
-        # Validación: ¿Está vacío?
-        if len(datos_archivo) == 0:
-            st.error("❌ Error: El archivo pesa 0 bytes. Intenta tomar la captura de nuevo.")
+        # Validación de seguridad
+        size = byte_stream.getbuffer().nbytes
+        if size == 0:
+            st.error("Error: La imagen está vacía.")
             return None, None
 
-        # 3. DETECTAR EXTENSIÓN Y TIPO MIME
-        # Streamlit nos da el nombre original (ej: screenshot.png)
-        nombre_orig = uploaded_file.name.lower()
-        
-        # Asignamos el MIME type correcto
-        mime_type = "image/jpeg" # Default
-        ext = "jpg"
-        
-        if nombre_orig.endswith(".png"):
-            mime_type = "image/png"
-            ext = "png"
-        elif nombre_orig.endswith(".webp"):
-            mime_type = "image/webp"
-            ext = "webp"
-        elif nombre_orig.endswith(".gif"):
-            mime_type = "image/gif"
-            ext = "gif"
-            
-        # 4. PREPARAR NOMBRE FINAL
         nombre_limpio = nombre_usuario.strip().replace(" ", "_")
         if not nombre_limpio: nombre_limpio = "Evidencia"
-        nombre_final = f"{nombre_limpio}_{int(time.time())}.{ext}"
         
-        # 5. SUBIDA CON 3 DATOS (Nombre, Bytes, TipoMime)
-        # Esto es lo que faltaba: decirle explícitamente el 'mime_type'
+        # Siempre será .jpg porque la pasamos por la función sanear_imagen
+        nombre_final = f"{nombre_limpio}_{int(time.time())}.jpg"
+        
+        # SUBIDA OFICIAL COMO JPEG
         response = client.files.create(
-            file=(nombre_final, datos_archivo, mime_type), 
+            file=(nombre_final, byte_stream, "image/jpeg"), 
             purpose="vision"
         )
         return response.id, nombre_final
-
     except Exception as e:
-        st.error(f"Error crítico subiendo: {e}")
+        st.error(f"Error subiendo: {e}")
         return None, None
 
 def obtener_biblioteca():
@@ -131,12 +136,17 @@ with st.sidebar:
             elif not archivo_nuevo:
                 st.error("¡Falta la imagen!")
             else:
-                with st.spinner("Subiendo original..."):
-                    rid, nombre_final = subir_archivo_openai(archivo_nuevo, nombre_manual)
-                    if rid:
-                        st.success(f"Guardado como: {nombre_final}")
-                        time.sleep(1)
-                        st.rerun()
+                with st.spinner("Procesando y Subiendo..."):
+                    # 1. SANEAMOS LA IMAGEN (Convertir a JPEG estándar)
+                    jpg_limpio = sanear_imagen(archivo_nuevo)
+                    
+                    if jpg_limpio:
+                        # 2. SUBIMOS LA IMAGEN LIMPIA
+                        rid, nombre_final = subir_archivo_openai(jpg_limpio, nombre_manual)
+                        if rid:
+                            st.success(f"Guardado como: {nombre_final}")
+                            time.sleep(1)
+                            st.rerun()
 
     st.divider()
 
