@@ -22,27 +22,19 @@ client = OpenAI(api_key=api_key)
 # --- FUNCIONES ---
 
 def redimensionar_imagen(uploaded_file):
-    """
-    Versión HD: Mantiene la calidad alta para que se lean los números pequeños.
-    """
     if uploaded_file is not None:
         try:
             image = Image.open(uploaded_file)
+            if image.mode in ("RGBA", "P"): image = image.convert("RGB")
             
-            # Convertir a RGB si es necesario
-            if image.mode in ("RGBA", "P"): 
-                image = image.convert("RGB")
-            
-            # CAMBIO CLAVE: Aumentamos el límite de 1024 a 4096 píxeles.
-            # Esto permite que las tablas grandes se vean nítidas.
-            max_size = (4096, 4096) 
-            image.thumbnail(max_size, Image.Resampling.LANCZOS) # Usamos un filtro de alta calidad
+            # BAJAMOS A 2048px (El estándar de oro para visión)
+            max_size = (2048, 2048) 
+            image.thumbnail(max_size, Image.Resampling.LANCZOS)
             
             byte_stream = io.BytesIO()
-            # Guardamos con calidad al 95% (antes era 85%) y optimizado
-            image.save(byte_stream, format="JPEG", quality=95, optimize=True)
+            # Calidad 90 es suficiente y más ligera
+            image.save(byte_stream, format="JPEG", quality=90, optimize=True)
             byte_stream.seek(0)
-            
             return byte_stream
         except Exception as e:
             st.error(f"Error procesando imagen: {e}")
@@ -199,15 +191,16 @@ if prompt:
             placeholder = st.empty()
             placeholder.markdown("⏳ *Analizando...*")
             run = client.beta.threads.runs.create_and_poll(thread_id=thread_id, assistant_id=assistant_id)
-            if run.status == 'completed':
+           if run.status == 'completed':
+                # ... (tu código normal de éxito) ...
                 msgs = client.beta.threads.messages.list(thread_id=thread_id, limit=1)
                 text = msgs.data[0].content[0].text.value
-                import re
-                clean_text = re.sub(r'【.*?】', '', text)
-                placeholder.markdown(clean_text)
-                st.session_state.messages.append({"role": "assistant", "content": clean_text})
+                # ... etc ...
+            elif run.status == 'failed':
+                # AQUÍ ESTÁ EL CAMBIO: Pedimos el detalle del error
+                st.error(f"❌ Error detallado: {run.last_error.message}")
+                st.code(f"Código: {run.last_error.code}")
             else:
-                placeholder.markdown(f"❌ Error: {run.status}")
-    except Exception as e:
-        st.error(f"Error: {e}")
+                placeholder.markdown(f"❌ Estado inesperado: {run.status}")
+
 
