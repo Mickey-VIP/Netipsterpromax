@@ -7,12 +7,11 @@ from openai import OpenAI
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Yarbis Bets Control", page_icon="🎯")
-st.title("🎯 Yarbis: Panel de Control")
+st.title("🎯 Yarbis: Panel de Control (High-Res)")
 
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
     assistant_id = st.secrets["ASSISTANT_ID"]
-    # Intentamos cargar el hilo base, pero permitiremos cambiarlo en sesión
     secret_thread_id = st.secrets["THREAD_ID"]
 except:
     st.error("⚠️ Faltan secretos.")
@@ -20,55 +19,60 @@ except:
 
 client = OpenAI(api_key=api_key)
 
-# --- GESTIÓN DE HILO (CEREBRO) ---
+# --- GESTIÓN DE HILO ---
 if "current_thread_id" not in st.session_state:
     st.session_state.current_thread_id = secret_thread_id
 
 def crear_nuevo_hilo():
-    """Genera un hilo limpio en OpenAI para olvidar errores pasados."""
     try:
         thread = client.beta.threads.create()
         st.session_state.current_thread_id = thread.id
         st.session_state.messages = []
-        st.toast("✅ ¡Hilo Nuevo Creado! Memoria limpia.", icon="🧠")
+        st.toast("✅ Hilo Nuevo. Cerebro limpio.", icon="🧠")
         time.sleep(1)
         st.rerun()
     except Exception as e:
-        st.error(f"Error creando hilo: {e}")
+        st.error(f"Error: {e}")
 
 # --- FUNCIONES DE IMAGEN ---
 
 def sanear_imagen(uploaded_file):
-    """Limpia y estandariza la imagen a JPEG."""
+    """
+    CAMBIO CLAVE: Usamos PNG en lugar de JPEG.
+    El PNG es 'lossless' (sin pérdida), ideal para leer números pequeños en tablas.
+    """
     if uploaded_file is not None:
         try:
             image = Image.open(uploaded_file)
-            if image.mode in ("RGBA", "P", "LA"): image = image.convert("RGB")
             
-            # Limitar tamaño para evitar timeouts
-            if image.width > 3000 or image.height > 3000:
-                image.thumbnail((3000, 3000), Image.Resampling.LANCZOS)
+            # OpenAI Vision maneja mejor RGB
+            if image.mode in ("RGBA", "P", "LA"): 
+                image = image.convert("RGB")
+            
+            # Aumentamos límite a 4000px para máxima nitidez
+            if image.width > 4000 or image.height > 4000:
+                image.thumbnail((4000, 4000), Image.Resampling.LANCZOS)
             
             byte_stream = io.BytesIO()
-            image.save(byte_stream, format="JPEG", quality=95)
+            # GUARDAMOS COMO PNG (Texto nítido)
+            image.save(byte_stream, format="PNG")
             byte_stream.seek(0)
             return byte_stream
         except Exception as e:
-            st.error(f"Error procesando imagen: {e}")
+            st.error(f"Error imagen: {e}")
     return None
 
 def subir_archivo_openai(byte_stream, nombre_usuario):
     try:
-        if byte_stream.getbuffer().nbytes == 0:
-            st.error("Error: Imagen vacía.")
-            return None, None
+        if byte_stream.getbuffer().nbytes == 0: return None, None
 
         nombre_limpio = nombre_usuario.strip().replace(" ", "_")
         if not nombre_limpio: nombre_limpio = "Evidencia"
-        nombre_final = f"{nombre_limpio}_{int(time.time())}.jpg"
+        # Extensión PNG
+        nombre_final = f"{nombre_limpio}_{int(time.time())}.png"
         
         response = client.files.create(
-            file=(nombre_final, byte_stream, "image/jpeg"), 
+            file=(nombre_final, byte_stream, "image/png"), 
             purpose="vision"
         )
         return response.id, nombre_final
@@ -118,34 +122,30 @@ def cargar_historial():
     except: pass
     return msgs
 
-# --- ESTADO INICIAL ---
-if "messages" not in st.session_state: 
-    st.session_state.messages = cargar_historial()
+# --- ESTADO ---
+if "messages" not in st.session_state: st.session_state.messages = cargar_historial()
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("🗂️ Panel de Control")
-    st.caption(f"Hilo ID: ...{st.session_state.current_thread_id[-6:]}")
     
-    # 1. BOTÓN DE EMERGENCIA (RESET)
     if st.button("🔥 Nuevo Hilo (Reset)", type="primary"):
         crear_nuevo_hilo()
 
     st.divider()
 
-    # 2. SUBIDA
-    with st.expander("📤 Subir Evidencia", expanded=True):
+    with st.expander("📤 Subir Evidencia (PNG Mode)", expanded=True):
         nombre_manual = st.text_input("Nombre:", placeholder="Ej: Roster OKC")
         archivo_nuevo = st.file_uploader("Captura:", type=["jpg", "png", "jpeg", "webp"])
         
         if st.button("Guardar"):
             if not nombre_manual or not archivo_nuevo:
-                st.error("Falta nombre o archivo.")
+                st.error("Falta datos.")
             else:
-                with st.spinner("Saneando y Subiendo..."):
-                    jpg = sanear_imagen(archivo_nuevo)
-                    if jpg:
-                        rid, nfin = subir_archivo_openai(jpg, nombre_manual)
+                with st.spinner("Optimizando para lectura OCR..."):
+                    png_img = sanear_imagen(archivo_nuevo)
+                    if png_img:
+                        rid, nfin = subir_archivo_openai(png_img, nombre_manual)
                         if rid:
                             st.success(f"Guardado: {nfin}")
                             time.sleep(1)
@@ -153,16 +153,13 @@ with st.sidebar:
     
     st.divider()
     
-    # 3. SELECTOR
     st.write("### Imágenes Activas:")
     biblioteca = obtener_biblioteca()
     opciones = [f"{f['name']} ({f['date']})" for f in biblioteca]
     mapa = {f"{f['name']} ({f['date']})": f['id'] for f in biblioteca}
-    
     seleccionados = st.multiselect("Selecciona:", options=opciones)
     ids_activos = [mapa[n] for n in seleccionados]
 
-    # 4. BORRAR
     if biblioteca:
         with st.expander("🗑️ Papelera"):
             a_borrar = st.selectbox("Eliminar:", options=opciones)
@@ -193,7 +190,13 @@ if prompt:
 
     try:
         tid = st.session_state.current_thread_id
-        content_pkg = [{"type": "text", "text": prompt}]
+        
+        # INYECCIÓN DE PROMPT DE VISIÓN
+        # Esto le "grita" al modelo que lea literalmente
+        texto_reforzado = f"{prompt}\n\n[INSTRUCCIÓN SISTEMA: Si hay una imagen adjunta, extrae los datos VISUALMENTE dígito por dígito. IGNORA tu conocimiento previo sobre jugadores. Lo que ves en la imagen es la única verdad.]"
+        
+        content_pkg = [{"type": "text", "text": texto_reforzado}]
+        
         for fid in ids_activos:
             content_pkg.append({"type": "image_file", "image_file": {"file_id": fid}})
 
@@ -201,7 +204,7 @@ if prompt:
 
         with st.chat_message("assistant"):
             box = st.empty()
-            box.markdown("⏳ *Analizando...*")
+            box.markdown("⏳ *Leyendo imagen pixel por pixel...*")
             
             run = client.beta.threads.runs.create_and_poll(thread_id=tid, assistant_id=assistant_id)
             
@@ -214,10 +217,8 @@ if prompt:
                 st.session_state.messages.append({"role": "assistant", "content": clean})
             
             elif run.status == 'failed':
-                err = run.last_error.message if run.last_error else "Error desconocido"
-                st.error(f"❌ Falló el análisis: {err}")
-                if "image_file" in err:
-                    st.warning("💡 Pista: El hilo busca una imagen borrada. Dale al botón '🔥 Nuevo Hilo (Reset)' en la barra lateral.")
+                err = run.last_error.message if run.last_error else "Error"
+                st.error(f"❌ Error: {err}")
             else:
                 box.markdown(f"Estado: {run.status}")
 
