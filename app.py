@@ -7,7 +7,7 @@ from openai import OpenAI
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Yarbis Bets Control", page_icon="🎯")
-st.title("🎯 Yarbis: Panel de Control (High-Res)")
+st.title("🎯 Yarbis: Panel de Control (Zero-Temp)")
 
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
@@ -38,23 +38,18 @@ def crear_nuevo_hilo():
 
 def sanear_imagen(uploaded_file):
     """
-    CAMBIO CLAVE: Usamos PNG en lugar de JPEG.
-    El PNG es 'lossless' (sin pérdida), ideal para leer números pequeños en tablas.
+    PNG High-Res para máxima legibilidad.
     """
     if uploaded_file is not None:
         try:
             image = Image.open(uploaded_file)
+            if image.mode in ("RGBA", "P", "LA"): image = image.convert("RGB")
             
-            # OpenAI Vision maneja mejor RGB
-            if image.mode in ("RGBA", "P", "LA"): 
-                image = image.convert("RGB")
-            
-            # Aumentamos límite a 4000px para máxima nitidez
+            # Limite seguro
             if image.width > 4000 or image.height > 4000:
                 image.thumbnail((4000, 4000), Image.Resampling.LANCZOS)
             
             byte_stream = io.BytesIO()
-            # GUARDAMOS COMO PNG (Texto nítido)
             image.save(byte_stream, format="PNG")
             byte_stream.seek(0)
             return byte_stream
@@ -68,7 +63,6 @@ def subir_archivo_openai(byte_stream, nombre_usuario):
 
         nombre_limpio = nombre_usuario.strip().replace(" ", "_")
         if not nombre_limpio: nombre_limpio = "Evidencia"
-        # Extensión PNG
         nombre_final = f"{nombre_limpio}_{int(time.time())}.png"
         
         response = client.files.create(
@@ -134,7 +128,7 @@ with st.sidebar:
 
     st.divider()
 
-    with st.expander("📤 Subir Evidencia (PNG Mode)", expanded=True):
+    with st.expander("📤 Subir Evidencia (PNG)", expanded=True):
         nombre_manual = st.text_input("Nombre:", placeholder="Ej: Roster OKC")
         archivo_nuevo = st.file_uploader("Captura:", type=["jpg", "png", "jpeg", "webp"])
         
@@ -142,7 +136,7 @@ with st.sidebar:
             if not nombre_manual or not archivo_nuevo:
                 st.error("Falta datos.")
             else:
-                with st.spinner("Optimizando para lectura OCR..."):
+                with st.spinner("Subiendo..."):
                     png_img = sanear_imagen(archivo_nuevo)
                     if png_img:
                         rid, nfin = subir_archivo_openai(png_img, nombre_manual)
@@ -191,11 +185,10 @@ if prompt:
     try:
         tid = st.session_state.current_thread_id
         
-        # INYECCIÓN DE PROMPT DE VISIÓN
-        # Esto le "grita" al modelo que lea literalmente
-        texto_reforzado = f"{prompt}\n\n[INSTRUCCIÓN SISTEMA: Si hay una imagen adjunta, extrae los datos VISUALMENTE dígito por dígito. IGNORA tu conocimiento previo sobre jugadores. Lo que ves en la imagen es la única verdad.]"
+        # INYECCIÓN DE PROMPT ESTRICTO AL INICIO
+        instruccion_sistema = "TAREA OCR ESTRICTA: Transcribe los datos de la imagen dígito por dígito. NO uses tu conocimiento previo. Si la imagen dice 32.8, escribe 32.8. La imagen es la única verdad.\n\n"
         
-        content_pkg = [{"type": "text", "text": texto_reforzado}]
+        content_pkg = [{"type": "text", "text": instruccion_sistema + prompt}]
         
         for fid in ids_activos:
             content_pkg.append({"type": "image_file", "image_file": {"file_id": fid}})
@@ -204,9 +197,15 @@ if prompt:
 
         with st.chat_message("assistant"):
             box = st.empty()
-            box.markdown("⏳ *Leyendo imagen pixel por pixel...*")
+            box.markdown("⏳ *Analizando...*")
             
-            run = client.beta.threads.runs.create_and_poll(thread_id=tid, assistant_id=assistant_id)
+            # --- AQUÍ ESTÁ EL CAMBIO CLAVE ---
+            # temperature=0.01 congela la creatividad para evitar alucinaciones
+            run = client.beta.threads.runs.create_and_poll(
+                thread_id=tid, 
+                assistant_id=assistant_id,
+                temperature=0.01 
+            )
             
             if run.status == 'completed':
                 msgs = client.beta.threads.messages.list(thread_id=tid, limit=1)
