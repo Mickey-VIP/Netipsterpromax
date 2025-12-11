@@ -19,38 +19,55 @@ client = OpenAI(api_key=api_key)
 
 # --- FUNCIONES ---
 
-# YA NO HAY FUNCION DE REDIMENSIONAR.
-# ENVIAMOS EL ARCHIVO ORIGINAL.
-
 def subir_archivo_openai(uploaded_file, nombre_usuario):
+    """
+    Sube el archivo original asegurando que OpenAI sepa qué tipo de imagen es.
+    """
     try:
-        # 1. Detectar extensión original (png, jpg, jpeg)
-        # Esto es CRUCIAL. Si subes un PNG y le pones nombre .jpg, OpenAI falla.
-        ext_original = uploaded_file.name.split('.')[-1].lower()
-        if ext_original not in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
-            # Si no tiene extensión conocida, asumimos jpg por seguridad o fallamos
-            ext_original = "jpg"
+        # 1. RESETEAR EL PUNTERO (Esto es vital, si no, se lee vacío)
+        uploaded_file.seek(0)
+        
+        # 2. LEER DATOS
+        datos_archivo = uploaded_file.read()
+        
+        # Validación: ¿Está vacío?
+        if len(datos_archivo) == 0:
+            st.error("❌ Error: El archivo pesa 0 bytes. Intenta tomar la captura de nuevo.")
+            return None, None
 
-        # 2. Limpiar nombre
+        # 3. DETECTAR EXTENSIÓN Y TIPO MIME
+        # Streamlit nos da el nombre original (ej: screenshot.png)
+        nombre_orig = uploaded_file.name.lower()
+        
+        # Asignamos el MIME type correcto
+        mime_type = "image/jpeg" # Default
+        ext = "jpg"
+        
+        if nombre_orig.endswith(".png"):
+            mime_type = "image/png"
+            ext = "png"
+        elif nombre_orig.endswith(".webp"):
+            mime_type = "image/webp"
+            ext = "webp"
+        elif nombre_orig.endswith(".gif"):
+            mime_type = "image/gif"
+            ext = "gif"
+            
+        # 4. PREPARAR NOMBRE FINAL
         nombre_limpio = nombre_usuario.strip().replace(" ", "_")
         if not nombre_limpio: nombre_limpio = "Evidencia"
+        nombre_final = f"{nombre_limpio}_{int(time.time())}.{ext}"
         
-        # 3. Crear nombre final respetando la extensión real
-        nombre_final = f"{nombre_limpio}_{int(time.time())}.{ext_original}"
-        
-        # 4. Leer los bytes crudos
-        # Regresamos el puntero a 0 por si acaso
-        uploaded_file.seek(0)
-        datos_archivo = uploaded_file.read()
-
-        # 5. Subida Directa
+        # 5. SUBIDA CON 3 DATOS (Nombre, Bytes, TipoMime)
+        # Esto es lo que faltaba: decirle explícitamente el 'mime_type'
         response = client.files.create(
-            file=(nombre_final, datos_archivo), 
+            file=(nombre_final, datos_archivo, mime_type), 
             purpose="vision"
         )
         return response.id, nombre_final
+
     except Exception as e:
-        st.error(f"Error subiendo: {e}")
+        st.error(f"Error crítico subiendo: {e}")
         return None, None
 
 def obtener_biblioteca():
@@ -115,7 +132,6 @@ with st.sidebar:
                 st.error("¡Falta la imagen!")
             else:
                 with st.spinner("Subiendo original..."):
-                    # Pasamos el archivo directo, sin redimensionar
                     rid, nombre_final = subir_archivo_openai(archivo_nuevo, nombre_manual)
                     if rid:
                         st.success(f"Guardado como: {nombre_final}")
