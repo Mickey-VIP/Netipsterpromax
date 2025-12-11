@@ -27,27 +27,23 @@ def redimensionar_imagen(uploaded_file):
             image = Image.open(uploaded_file)
             if image.mode in ("RGBA", "P"): image = image.convert("RGB")
             
-            # BAJAMOS A 2048px (El estándar de oro para visión)
-            max_size = (2048, 2048) 
+            # AJUSTE: 2048px es el estándar ideal para OpenAI (calidad vs velocidad)
+            max_size = (2048, 2048)
             image.thumbnail(max_size, Image.Resampling.LANCZOS)
             
             byte_stream = io.BytesIO()
-            # Calidad 90 es suficiente y más ligera
+            # Optimizamos el JPG para que pese menos
             image.save(byte_stream, format="JPEG", quality=90, optimize=True)
             byte_stream.seek(0)
             return byte_stream
         except Exception as e:
-            st.error(f"Error procesando imagen: {e}")
+            st.error(f"Error imagen: {e}")
     return None
 
 def subir_archivo_openai(byte_stream, nombre_usuario):
-    """Sube archivo usando el nombre que TÚ escribiste."""
     try:
-        # Limpiamos el nombre para que sea seguro (quitamos espacios raros)
         nombre_limpio = nombre_usuario.strip().replace(" ", "_")
         if not nombre_limpio: nombre_limpio = "Evidencia"
-        
-        # Agregamos timestamp corto para que sea único
         nombre_final = f"{nombre_limpio}_{int(time.time())}.jpg"
         
         response = client.files.create(
@@ -106,15 +102,12 @@ def cargar_historial():
 # --- ESTADO ---
 if "messages" not in st.session_state: st.session_state.messages = cargar_historial()
 
-# --- SIDEBAR (TU PANEL) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("🗂️ Biblioteca Manual")
     
-    # 1. ZONA DE CARGA (Ahora con campo de texto)
     with st.expander("📤 Subir Evidencia", expanded=True):
-        # AQUI ESTÁ EL CAMBIO: Tú escribes el nombre primero
         nombre_manual = st.text_input("Nombre (Ej: Roster OKC):", placeholder="Escribe aquí qué es...")
-        
         archivo_nuevo = st.file_uploader("Pega tu captura:", type=["jpg", "png", "jpeg"])
         
         if st.button("Guardar en Biblioteca"):
@@ -134,18 +127,14 @@ with st.sidebar:
 
     st.divider()
 
-    # 2. SELECTOR
     st.write("### Selecciona qué usar hoy:")
     biblioteca = obtener_biblioteca()
-    
-    # Creamos las opciones para el menú
     opciones_nombres = [f"{f['name']} ({f['date']})" for f in biblioteca]
     mapa_ids = {f"{f['name']} ({f['date']})": f['id'] for f in biblioteca}
     
     seleccionados_nombres = st.multiselect("Activar imágenes:", options=opciones_nombres, placeholder="Selecciona...")
     ids_activos = [mapa_ids[nombre] for nombre in seleccionados_nombres]
 
-    # 3. BORRAR
     if biblioteca:
         with st.expander("🗑️ Borrar archivos"):
             borrar_nombre = st.selectbox("Eliminar:", options=opciones_nombres)
@@ -190,17 +179,27 @@ if prompt:
         with st.chat_message("assistant"):
             placeholder = st.empty()
             placeholder.markdown("⏳ *Analizando...*")
+            
             run = client.beta.threads.runs.create_and_poll(thread_id=thread_id, assistant_id=assistant_id)
-           if run.status == 'completed':
-                # ... (tu código normal de éxito) ...
+            
+            # --- AQUÍ ESTABA EL ERROR, AHORA YA ESTÁ ALINEADO ---
+            if run.status == 'completed':
                 msgs = client.beta.threads.messages.list(thread_id=thread_id, limit=1)
                 text = msgs.data[0].content[0].text.value
-                # ... etc ...
+                import re
+                clean_text = re.sub(r'【.*?】', '', text)
+                placeholder.markdown(clean_text)
+                st.session_state.messages.append({"role": "assistant", "content": clean_text})
+            
             elif run.status == 'failed':
-                # AQUÍ ESTÁ EL CAMBIO: Pedimos el detalle del error
-                st.error(f"❌ Error detallado: {run.last_error.message}")
-                st.code(f"Código: {run.last_error.code}")
+                # Si falla, te dirá la razón exacta en rojo
+                error_msg = run.last_error.message if run.last_error else "Error desconocido"
+                st.error(f"❌ Error detallado: {error_msg}")
+                if run.last_error:
+                    st.code(f"Código: {run.last_error.code}")
+            
             else:
                 placeholder.markdown(f"❌ Estado inesperado: {run.status}")
 
-
+    except Exception as e:
+        st.error(f"Error: {e}")
