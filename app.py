@@ -1,8 +1,6 @@
 import streamlit as st
-import io
 import time
 import datetime
-from PIL import Image
 from openai import OpenAI
 
 # --- CONFIGURACIÓN ---
@@ -21,43 +19,33 @@ client = OpenAI(api_key=api_key)
 
 # --- FUNCIONES ---
 
-def redimensionar_imagen(uploaded_file):
-    if uploaded_file is not None:
-        try:
-            image = Image.open(uploaded_file)
-            if image.mode in ("RGBA", "P"): image = image.convert("RGB")
-            
-            # Tamaño seguro y estándar
-            max_size = (2048, 2048)
-            image.thumbnail(max_size, Image.Resampling.LANCZOS)
-            
-            byte_stream = io.BytesIO()
-            # Quitamos 'optimize=True' para evitar corrupción de headers
-            # Usamos calidad 85 que es el estándar de oro de compatibilidad
-            image.save(byte_stream, format="JPEG", quality=85)
-            byte_stream.seek(0)
-            return byte_stream
-        except Exception as e:
-            st.error(f"Error imagen: {e}")
-    return None
+# YA NO HAY FUNCION DE REDIMENSIONAR.
+# ENVIAMOS EL ARCHIVO ORIGINAL.
 
-def subir_archivo_openai(byte_stream, nombre_usuario):
+def subir_archivo_openai(uploaded_file, nombre_usuario):
     try:
-        # 1. Validación de seguridad: ¿El archivo pesa algo?
-        size = byte_stream.getbuffer().nbytes
-        if size == 0:
-            st.error("Error: La imagen procesada está vacía.")
-            return None, None
+        # 1. Detectar extensión original (png, jpg, jpeg)
+        # Esto es CRUCIAL. Si subes un PNG y le pones nombre .jpg, OpenAI falla.
+        ext_original = uploaded_file.name.split('.')[-1].lower()
+        if ext_original not in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
+            # Si no tiene extensión conocida, asumimos jpg por seguridad o fallamos
+            ext_original = "jpg"
 
+        # 2. Limpiar nombre
         nombre_limpio = nombre_usuario.strip().replace(" ", "_")
         if not nombre_limpio: nombre_limpio = "Evidencia"
-        nombre_final = f"{nombre_limpio}_{int(time.time())}.jpg"
         
-        # 2. SUBIDA EXPLÍCITA CON MIME TYPE
-        # Pasamos una tupla de 3 elementos: (nombre, datos, tipo_mime)
-        # Esto asegura que OpenAI la trate como imagen sí o sí.
+        # 3. Crear nombre final respetando la extensión real
+        nombre_final = f"{nombre_limpio}_{int(time.time())}.{ext_original}"
+        
+        # 4. Leer los bytes crudos
+        # Regresamos el puntero a 0 por si acaso
+        uploaded_file.seek(0)
+        datos_archivo = uploaded_file.read()
+
+        # 5. Subida Directa
         response = client.files.create(
-            file=(nombre_final, byte_stream, "image/jpeg"), 
+            file=(nombre_final, datos_archivo), 
             purpose="vision"
         )
         return response.id, nombre_final
@@ -118,7 +106,7 @@ with st.sidebar:
     
     with st.expander("📤 Subir Evidencia", expanded=True):
         nombre_manual = st.text_input("Nombre (Ej: Roster OKC):", placeholder="Escribe aquí qué es...")
-        archivo_nuevo = st.file_uploader("Pega tu captura:", type=["jpg", "png", "jpeg"])
+        archivo_nuevo = st.file_uploader("Pega tu captura:", type=["jpg", "png", "jpeg", "webp"])
         
         if st.button("Guardar en Biblioteca"):
             if not nombre_manual:
@@ -126,14 +114,13 @@ with st.sidebar:
             elif not archivo_nuevo:
                 st.error("¡Falta la imagen!")
             else:
-                with st.spinner("Subiendo..."):
-                    bytes_img = redimensionar_imagen(archivo_nuevo)
-                    if bytes_img:
-                        rid, nombre_final = subir_archivo_openai(bytes_img, nombre_manual)
-                        if rid:
-                            st.success(f"Guardado como: {nombre_final}")
-                            time.sleep(1)
-                            st.rerun()
+                with st.spinner("Subiendo original..."):
+                    # Pasamos el archivo directo, sin redimensionar
+                    rid, nombre_final = subir_archivo_openai(archivo_nuevo, nombre_manual)
+                    if rid:
+                        st.success(f"Guardado como: {nombre_final}")
+                        time.sleep(1)
+                        st.rerun()
 
     st.divider()
 
